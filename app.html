@@ -1,0 +1,1458 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>組織デザインラボ</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
+    <style>
+        /* カスタムスタイル */
+        .org-node {
+            transition: all 0.2s ease;
+        }
+        .org-node:hover {
+            filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.1));
+        }
+        .node-button {
+            transition: opacity 0.2s ease;
+        }
+        .loading-spinner {
+            border: 3px solid #e5e7eb;
+            border-top: 3px solid #3b82f6;
+            border-radius: 50%;
+            width: 2rem;
+            height: 2rem;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    
+    <script type="text/babel">
+        const { useState, useRef, useEffect, useCallback } = React;
+        
+        // Google Apps Script API wrapper
+        const gasApi = {
+            getAllPlans: () => {
+                return new Promise((resolve, reject) => {
+                    google.script.run
+                        .withSuccessHandler(resolve)
+                        .withFailureHandler(reject)
+                        .getAllPlans();
+                });
+            },
+            
+            savePlan: (planId, planData) => {
+                return new Promise((resolve, reject) => {
+                    google.script.run
+                        .withSuccessHandler(resolve)
+                        .withFailureHandler(reject)
+                        .savePlan(planId, planData);
+                });
+            },
+            
+            deletePlan: (planId) => {
+                return new Promise((resolve, reject) => {
+                    google.script.run
+                        .withSuccessHandler(resolve)
+                        .withFailureHandler(reject)
+                        .deletePlan(planId);
+                });
+            },
+            
+            batchUpdateNodes: (planId, updates) => {
+                return new Promise((resolve, reject) => {
+                    google.script.run
+                        .withSuccessHandler(resolve)
+                        .withFailureHandler(reject)
+                        .batchUpdateNodes(planId, updates);
+                });
+            },
+            
+            exportToCSV: (planId) => {
+                return new Promise((resolve, reject) => {
+                    google.script.run
+                        .withSuccessHandler(resolve)
+                        .withFailureHandler(reject)
+                        .exportToCSV(planId);
+                });
+            },
+            
+            getSharedUsers: () => {
+                return new Promise((resolve, reject) => {
+                    google.script.run
+                        .withSuccessHandler(resolve)
+                        .withFailureHandler(reject)
+                        .getSharedUsers();
+                });
+            },
+            
+            addSharedUser: (email, permission) => {
+                return new Promise((resolve, reject) => {
+                    google.script.run
+                        .withSuccessHandler(resolve)
+                        .withFailureHandler(reject)
+                        .addSharedUser(email, permission);
+                });
+            },
+            
+            updateUserPermission: (email, permission) => {
+                return new Promise((resolve, reject) => {
+                    google.script.run
+                        .withSuccessHandler(resolve)
+                        .withFailureHandler(reject)
+                        .updateUserPermission(email, permission);
+                });
+            },
+            
+            removeSharedUser: (email) => {
+                return new Promise((resolve, reject) => {
+                    google.script.run
+                        .withSuccessHandler(resolve)
+                        .withFailureHandler(reject)
+                        .removeSharedUser(email);
+                });
+            },
+            
+            generateShareLink: () => {
+                return new Promise((resolve, reject) => {
+                    google.script.run
+                        .withSuccessHandler(resolve)
+                        .withFailureHandler(reject)
+                        .generateShareLink();
+                });
+            }
+        };
+        
+        // メインコンポーネント
+        const OrgChartApp = () => {
+            const [loading, setLoading] = useState(true);
+            const [error, setError] = useState(null);
+            const [currentUser, setCurrentUser] = useState(null);
+            const [orgData, setOrgData] = useState({});
+            const [currentView, setCurrentView] = useState('current');
+            const [zoom, setZoom] = useState(1);
+            const [pan, setPan] = useState({ x: 0, y: 0 });
+            const [isDragging, setIsDragging] = useState(false);
+            const [draggedNode, setDraggedNode] = useState(null);
+            const [lastPanPoint, setLastPanPoint] = useState({ x: 0, y: 0 });
+            const [showAddModal, setShowAddModal] = useState(false);
+            const [showEditModal, setShowEditModal] = useState(false);
+            const [showPlanModal, setShowPlanModal] = useState(false);
+            const [showManageModal, setShowManageModal] = useState(false);
+            const [showShareModal, setShowShareModal] = useState(false);
+            const [selectedParent, setSelectedParent] = useState(null);
+            const [editingNode, setEditingNode] = useState(null);
+            const [newNodeData, setNewNodeData] = useState({
+                name: '',
+                position: '',
+                grade: 'G4',
+                type: 'existing',
+                employment: '正社員'
+            });
+            const [newPlanData, setNewPlanData] = useState({
+                period: '',
+                memo: '',
+                baseOrganization: 'current'
+            });
+            const svgRef = useRef(null);
+            
+            // 初期データ読み込み
+            useEffect(() => {
+                loadData();
+            }, []);
+            
+            const loadData = async () => {
+                setLoading(true);
+                try {
+                    const result = await gasApi.getAllPlans();
+                    if (result.success) {
+                        setOrgData(result.data);
+                        setCurrentUser(result.user);
+                    } else {
+                        setError(result.error);
+                    }
+                } catch (err) {
+                    setError(err.message);
+                } finally {
+                    setLoading(false);
+                }
+            };
+            
+            // 現在表示中のノード
+            const currentNodes = orgData[currentView]?.nodes || [];
+            
+            // 充足率計算
+            const calculateFillRate = () => {
+                const totalPositions = currentNodes.length;
+                const filledPositions = currentNodes.filter(node => node.type === 'existing').length;
+                const fillRate = totalPositions > 0 ? (filledPositions / totalPositions * 100).toFixed(1) : 0;
+                return {
+                    fillRate: parseFloat(fillRate),
+                    filled: filledPositions,
+                    total: totalPositions
+                };
+            };
+            
+            const fillRateData = calculateFillRate();
+            
+            // ノードカラー設定
+            const getNodeColor = (node) => {
+                if (node.grade) {
+                    const gradeColors = {
+                        'G8': '#1e3a8a',
+                        'G7': '#1e40af',
+                        'G6': '#2563eb',
+                        'G5': '#3b82f6',
+                        'G4': '#60a5fa',
+                        'G3': '#93c5fd',
+                        'G2': '#dbeafe',
+                        'G1': '#ffffff'
+                    };
+                    return gradeColors[node.grade] || '#f3f4f6';
+                }
+                return '#f3f4f6';
+            };
+            
+            // ズーム操作
+            const handleZoomIn = () => setZoom(prev => Math.min(prev * 1.2, 3));
+            const handleZoomOut = () => setZoom(prev => Math.max(prev / 1.2, 0.3));
+            const handleResetView = () => {
+                setZoom(1);
+                setPan({ x: 0, y: 0 });
+            };
+            
+            // パン操作
+            const handleMouseDown = (e) => {
+                if (e.target === svgRef.current) {
+                    setIsDragging(true);
+                    setLastPanPoint({ x: e.clientX, y: e.clientY });
+                }
+            };
+            
+            const handleMouseMove = (e) => {
+                if (isDragging) {
+                    const deltaX = e.clientX - lastPanPoint.x;
+                    const deltaY = e.clientY - lastPanPoint.y;
+                    setPan(prev => ({
+                        x: prev.x + deltaX / zoom,
+                        y: prev.y + deltaY / zoom
+                    }));
+                    setLastPanPoint({ x: e.clientX, y: e.clientY });
+                } else if (draggedNode) {
+                    const svgRect = svgRef.current.getBoundingClientRect();
+                    const newX = (e.clientX - svgRect.left - pan.x) / zoom;
+                    const newY = (e.clientY - svgRect.top - pan.y) / zoom;
+                    
+                    updateNodePosition(draggedNode.id, newX, newY);
+                }
+            };
+            
+            const handleMouseUp = () => {
+                setIsDragging(false);
+                setDraggedNode(null);
+                
+                // 位置変更を保存
+                if (draggedNode) {
+                    saveCurrentPlan();
+                }
+            };
+            
+            // ノード位置更新
+            const updateNodePosition = (nodeId, x, y) => {
+                setOrgData(prev => ({
+                    ...prev,
+                    [currentView]: {
+                        ...prev[currentView],
+                        nodes: prev[currentView].nodes.map(node =>
+                            node.id === nodeId ? { ...node, x, y } : node
+                        )
+                    }
+                }));
+            };
+            
+            // ノードドラッグ開始
+            const handleNodeDragStart = (e, node) => {
+                e.stopPropagation();
+                setDraggedNode(node);
+            };
+            
+            // 子ノードを縦に整列
+            const arrangeChildrenVertically = async (parentId) => {
+                const children = currentNodes.filter(node => node.parentId === parentId);
+                if (children.length === 0) return;
+                
+                const parent = currentNodes.find(n => n.id === parentId);
+                if (!parent) return;
+                
+                const updates = [];
+                const startX = parent.x + 80;
+                const startY = parent.y + 140;
+                
+                children.forEach((child, index) => {
+                    updates.push({
+                        id: child.id,
+                        data: {
+                            x: startX,
+                            y: startY + index * 120,
+                            isArranged: true
+                        }
+                    });
+                });
+                
+                // バッチ更新
+                try {
+                    const result = await gasApi.batchUpdateNodes(currentView, updates);
+                    if (result.success) {
+                        await loadData();
+                        showToast('レイアウトを調整しました', 'success');
+                    } else {
+                        showToast(result.error, 'error');
+                    }
+                } catch (err) {
+                    showToast(err.message, 'error');
+                }
+            };
+            
+            // 新しい計画を作成
+            const createNewPlan = async () => {
+                if (!newPlanData.period) return;
+                
+                const newPlanId = `plan_${Date.now()}`;
+                const baseData = orgData[newPlanData.baseOrganization];
+                
+                const planData = {
+                    name: `${newPlanData.period}組織`,
+                    period: newPlanData.period,
+                    memo: newPlanData.memo,
+                    nodes: [...baseData.nodes]
+                };
+                
+                try {
+                    const result = await gasApi.savePlan(newPlanId, planData);
+                    if (result.success) {
+                        await loadData();
+                        setCurrentView(newPlanId);
+                        setShowPlanModal(false);
+                        setNewPlanData({ period: '', memo: '', baseOrganization: 'current' });
+                        showToast('新しい計画を作成しました', 'success');
+                    } else {
+                        showToast(result.error, 'error');
+                    }
+                } catch (err) {
+                    showToast(err.message, 'error');
+                }
+            };
+            
+            // 計画を削除
+            const deletePlan = async (planId) => {
+                if (!confirm('この計画を削除してもよろしいですか？')) return;
+                
+                try {
+                    const result = await gasApi.deletePlan(planId);
+                    if (result.success) {
+                        await loadData();
+                        if (currentView === planId) {
+                            setCurrentView('current');
+                        }
+                        showToast('計画を削除しました', 'success');
+                    } else {
+                        showToast(result.error, 'error');
+                    }
+                } catch (err) {
+                    showToast(err.message, 'error');
+                }
+            };
+            
+            // 現在の計画を保存
+            const saveCurrentPlan = async () => {
+                const planData = orgData[currentView];
+                try {
+                    const result = await gasApi.savePlan(currentView, planData);
+                    if (!result.success) {
+                        showToast(result.error, 'error');
+                    }
+                } catch (err) {
+                    showToast(err.message, 'error');
+                }
+            };
+            
+            // ノード追加
+            const saveNewPosition = async () => {
+                if (!selectedParent || !newNodeData.name || !newNodeData.position) return;
+                
+                const newId = (Math.max(...currentNodes.map(n => parseInt(n.id)), 0) + 1).toString();
+                const newNode = {
+                    id: newId,
+                    ...newNodeData,
+                    level: selectedParent.level + 1,
+                    parentId: selectedParent.id,
+                    x: selectedParent.x + 80,
+                    y: selectedParent.y + 140
+                };
+                
+                const updatedPlan = {
+                    ...orgData[currentView],
+                    nodes: [...currentNodes, newNode]
+                };
+                
+                try {
+                    const result = await gasApi.savePlan(currentView, updatedPlan);
+                    if (result.success) {
+                        await loadData();
+                        setShowAddModal(false);
+                        setSelectedParent(null);
+                        setNewNodeData({
+                            name: '',
+                            position: '',
+                            grade: 'G4',
+                            type: 'existing',
+                            employment: '正社員'
+                        });
+                        showToast('ポジションを追加しました', 'success');
+                    } else {
+                        showToast(result.error, 'error');
+                    }
+                } catch (err) {
+                    showToast(err.message, 'error');
+                }
+            };
+            
+            // ノード編集
+            const saveNodeEdit = async () => {
+                if (!editingNode) return;
+                
+                const updatedPlan = {
+                    ...orgData[currentView],
+                    nodes: currentNodes.map(node =>
+                        node.id === editingNode.id ? editingNode : node
+                    )
+                };
+                
+                try {
+                    const result = await gasApi.savePlan(currentView, updatedPlan);
+                    if (result.success) {
+                        await loadData();
+                        setEditingNode(null);
+                        setShowEditModal(false);
+                        showToast('ポジションを更新しました', 'success');
+                    } else {
+                        showToast(result.error, 'error');
+                    }
+                } catch (err) {
+                    showToast(err.message, 'error');
+                }
+            };
+            
+            // ノード削除
+            const deleteNode = async (nodeId) => {
+                if (!confirm('このポジションを削除してもよろしいですか？')) return;
+                
+                const nodeToDelete = currentNodes.find(n => n.id === nodeId);
+                if (!nodeToDelete) return;
+                
+                const updatedPlan = {
+                    ...orgData[currentView],
+                    nodes: currentNodes
+                        .filter(node => node.id !== nodeId)
+                        .map(node => 
+                            node.parentId === nodeId 
+                                ? { ...node, parentId: nodeToDelete.parentId, level: node.level - 1 }
+                                : node
+                        )
+                };
+                
+                try {
+                    const result = await gasApi.savePlan(currentView, updatedPlan);
+                    if (result.success) {
+                        await loadData();
+                        showToast('ポジションを削除しました', 'success');
+                    } else {
+                        showToast(result.error, 'error');
+                    }
+                } catch (err) {
+                    showToast(err.message, 'error');
+                }
+            };
+            
+            // CSV出力
+            const exportToCSV = async () => {
+                try {
+                    const result = await gasApi.exportToCSV(currentView);
+                    if (result.success) {
+                        const blob = new Blob([result.data], { type: 'text/csv;charset=utf-8;' });
+                        const link = document.createElement('a');
+                        link.href = URL.createObjectURL(blob);
+                        link.download = result.filename;
+                        link.click();
+                        showToast('CSVファイルをダウンロードしました', 'success');
+                    } else {
+                        showToast(result.error, 'error');
+                    }
+                } catch (err) {
+                    showToast(err.message, 'error');
+                }
+            };
+            
+            // トースト表示
+            const [toast, setToast] = useState(null);
+            const showToast = (message, type = 'info') => {
+                setToast({ message, type });
+                setTimeout(() => setToast(null), 3000);
+            };
+            
+            // 接続線の描画
+            const renderConnections = () => {
+                const connections = [];
+                const processedParents = new Set();
+                
+                currentNodes.forEach(node => {
+                    if (!node.parentId) return;
+                    const parent = currentNodes.find(n => n.id === node.parentId);
+                    if (!parent) return;
+                    
+                    const siblings = currentNodes.filter(n => n.parentId === node.parentId);
+                    const hasArrangedSiblings = siblings.some(sibling => sibling.isArranged);
+                    
+                    if (hasArrangedSiblings && siblings.length > 1) {
+                        const parentKey = node.parentId;
+                        
+                        if (!processedParents.has(parentKey)) {
+                            processedParents.add(parentKey);
+                            
+                            const parentBottomY = parent.y + 45;
+                            const firstChildY = siblings[0].y;
+                            const lastChildY = siblings[siblings.length - 1].y;
+                            
+                            connections.push(
+                                <line
+                                    key={`parent-vertical-${parentKey}`}
+                                    x1={parent.x}
+                                    y1={parentBottomY}
+                                    x2={parent.x}
+                                    y2={firstChildY}
+                                    stroke="#6b7280"
+                                    strokeWidth="2"
+                                />
+                            );
+                            
+                            if (siblings.length > 1) {
+                                connections.push(
+                                    <line
+                                        key={`trunk-vertical-${parentKey}`}
+                                        x1={parent.x}
+                                        y1={firstChildY}
+                                        x2={parent.x}
+                                        y2={lastChildY}
+                                        stroke="#6b7280"
+                                        strokeWidth="2"
+                                    />
+                                );
+                            }
+                        }
+                        
+                        connections.push(
+                            <line
+                                key={`child-horizontal-${node.id}`}
+                                x1={parent.x}
+                                y1={node.y}
+                                x2={node.x}
+                                y2={node.y}
+                                stroke="#6b7280"
+                                strokeWidth="2"
+                            />
+                        );
+                    } else {
+                        const parentBottomY = parent.y + 45;
+                        const childTopY = node.y - 25;
+                        const childCenterX = node.x;
+                        const midY = parentBottomY + (childTopY - parentBottomY) / 2;
+                        
+                        connections.push(
+                            <g key={`connection-${node.id}`}>
+                                <line
+                                    x1={parent.x}
+                                    y1={parentBottomY}
+                                    x2={parent.x}
+                                    y2={midY}
+                                    stroke="#6b7280"
+                                    strokeWidth="2"
+                                />
+                                <line
+                                    x1={parent.x}
+                                    y1={midY}
+                                    x2={childCenterX}
+                                    y2={midY}
+                                    stroke="#6b7280"
+                                    strokeWidth="2"
+                                />
+                                <line
+                                    x1={childCenterX}
+                                    y1={midY}
+                                    x2={childCenterX}
+                                    y2={childTopY}
+                                    stroke="#6b7280"
+                                    strokeWidth="2"
+                                />
+                            </g>
+                        );
+                    }
+                });
+                
+                return connections;
+            };
+            
+            // ローディング画面
+            if (loading) {
+                return (
+                    <div className="flex items-center justify-center h-screen">
+                        <div className="text-center">
+                            <div className="loading-spinner mx-auto mb-4"></div>
+                            <p className="text-gray-600">読み込み中...</p>
+                        </div>
+                    </div>
+                );
+            }
+            
+            // エラー画面
+            if (error) {
+                return (
+                    <div className="flex items-center justify-center h-screen">
+                        <div className="text-center">
+                            <p className="text-red-600 mb-4">エラーが発生しました</p>
+                            <p className="text-gray-600">{error}</p>
+                            <button
+                                onClick={loadData}
+                                className="mt-4 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+                            >
+                                再読み込み
+                            </button>
+                        </div>
+                    </div>
+                );
+            }
+            
+            // メインUI
+            return (
+                <div className="w-full h-screen bg-gray-50 flex flex-col">
+                    {/* ヘッダー */}
+                    <div className="bg-white shadow-sm border-b p-4 flex justify-between items-center">
+                        <div className="flex items-center space-x-4">
+                            <h1 className="text-2xl font-bold text-gray-800">組織デザインラボ</h1>
+                            
+                            <select
+                                value={currentView}
+                                onChange={(e) => setCurrentView(e.target.value)}
+                                className="bg-white border border-gray-300 rounded-lg px-4 py-2 text-gray-700"
+                            >
+                                {Object.entries(orgData).map(([key, plan]) => (
+                                    <option key={key} value={key}>
+                                        {plan.period || plan.name}
+                                    </option>
+                                ))}
+                            </select>
+                            
+                            {currentUser?.permission !== 'view' && (
+                                <>
+                                    <button
+                                        onClick={() => setShowPlanModal(true)}
+                                        className="px-3 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 text-sm"
+                                    >
+                                        + 新規計画
+                                    </button>
+                                    
+                                    <button
+                                        onClick={() => setShowManageModal(true)}
+                                        className="px-3 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 text-sm"
+                                    >
+                                        ⚙️ 管理
+                                    </button>
+                                </>
+                            )}
+                        </div>
+                        
+                        <div className="flex items-center space-x-2">
+                            <div className="flex bg-gray-100 rounded-lg p-1">
+                                <button onClick={handleZoomOut} className="p-2 hover:bg-gray-200 rounded">
+                                    －
+                                </button>
+                                <span className="px-3 py-2 text-sm font-mono">{Math.round(zoom * 100)}%</span>
+                                <button onClick={handleZoomIn} className="p-2 hover:bg-gray-200 rounded">
+                                    ＋
+                                </button>
+                                <button onClick={handleResetView} className="p-2 hover:bg-gray-200 rounded">
+                                    ↻
+                                </button>
+                            </div>
+                            
+                            <button
+                                onClick={() => setShowShareModal(true)}
+                                className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"
+                            >
+                                共有
+                            </button>
+                            
+                            <button
+                                onClick={exportToCSV}
+                                className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600"
+                            >
+                                CSV出力
+                            </button>
+                        </div>
+                    </div>
+                    
+                    {/* 充足率表示 */}
+                    <div className="bg-white p-3 border-b">
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center space-x-4">
+                                <h2 className="text-lg font-semibold text-gray-800">ポジション充足率</h2>
+                                <div className="flex items-center space-x-2">
+                                    <div className="w-64 bg-gray-200 rounded-full h-4">
+                                        <div 
+                                            className="bg-black h-4 rounded-full transition-all duration-300"
+                                            style={{ width: `${fillRateData.fillRate}%` }}
+                                        ></div>
+                                    </div>
+                                    <span className="text-xl font-bold text-black">
+                                        {fillRateData.fillRate}%
+                                    </span>
+                                    <span className="text-sm text-gray-600">
+                                        ({fillRateData.filled}/{fillRateData.total}ポジション)
+                                    </span>
+                                </div>
+                            </div>
+                            
+                            <div className="flex items-center space-x-4 text-sm">
+                                <div className="flex items-center space-x-2">
+                                    <div className="w-3 h-3 bg-green-500 rounded"></div>
+                                    <span>充足済み: {fillRateData.filled}</span>
+                                </div>
+                                <div className="flex items-center space-x-2">
+                                    <div className="w-3 h-3 bg-red-400 rounded"></div>
+                                    <span>空きポジション: {fillRateData.total - fillRateData.filled}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    {/* キャンバス */}
+                    <div className="flex-1 relative overflow-hidden">
+                        <svg
+                            ref={svgRef}
+                            className="w-full h-full cursor-move"
+                            onMouseDown={handleMouseDown}
+                            onMouseMove={handleMouseMove}
+                            onMouseUp={handleMouseUp}
+                            onMouseLeave={handleMouseUp}
+                        >
+                            <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
+                                {renderConnections()}
+                                
+                                {currentNodes.map(node => (
+                                    <g key={node.id} className="org-node">
+                                        <rect
+                                            x={node.x - 60}
+                                            y={node.y - 25}
+                                            width="120"
+                                            height="90"
+                                            fill={getNodeColor(node)}
+                                            stroke={node.type === 'vacant' ? '#ef4444' : '#9ca3af'}
+                                            strokeWidth={node.type === 'vacant' ? '3' : '2'}
+                                            rx="8"
+                                            className="cursor-move"
+                                            onMouseDown={(e) => handleNodeDragStart(e, node)}
+                                        />
+                                        
+                                        <text
+                                            x={node.x}
+                                            y={node.y - 8}
+                                            textAnchor="middle"
+                                            className="text-xs font-semibold pointer-events-none"
+                                            fill={node.grade && node.grade !== 'G1' ? '#ffffff' : '#111827'}
+                                        >
+                                            {node.name}
+                                        </text>
+                                        <text
+                                            x={node.x}
+                                            y={node.y + 22}
+                                            textAnchor="middle"
+                                            className="text-xs pointer-events-none"
+                                            fill={node.grade && node.grade !== 'G1' ? '#e5e7eb' : '#6b7280'}
+                                        >
+                                            {node.employment}
+                                        </text>
+                                        {node.grade && (
+                                            <text
+                                                x={node.x}
+                                                y={node.y + 36}
+                                                textAnchor="middle"
+                                                className="text-xs font-semibold pointer-events-none"
+                                                fill={node.grade !== 'G1' ? '#ffffff' : '#374151'}
+                                            >
+                                                {node.grade}
+                                            </text>
+                                        )}
+                                        
+                                        {currentUser?.permission !== 'view' && (
+                                            <g className="opacity-0 hover:opacity-100 transition-opacity node-button">
+                                                {currentNodes.filter(n => n.parentId === node.id).length > 0 && (
+                                                    <>
+                                                        <circle
+                                                            cx={node.x + 50}
+                                                            cy={node.y - 30}
+                                                            r="8"
+                                                            fill="#8b5cf6"
+                                                            className="cursor-pointer"
+                                                            onClick={() => arrangeChildrenVertically(node.id)}
+                                                        />
+                                                        <text
+                                                            x={node.x + 50}
+                                                            y={node.y - 25}
+                                                            textAnchor="middle"
+                                                            className="text-xs fill-white pointer-events-none"
+                                                        >
+                                                            ⚡
+                                                        </text>
+                                                    </>
+                                                )}
+                                                
+                                                <circle
+                                                    cx={node.x + 50}
+                                                    cy={node.y - 10}
+                                                    r="8"
+                                                    fill="#10b981"
+                                                    className="cursor-pointer"
+                                                    onClick={() => {
+                                                        setSelectedParent(node);
+                                                        setShowAddModal(true);
+                                                    }}
+                                                />
+                                                <text
+                                                    x={node.x + 50}
+                                                    y={node.y - 5}
+                                                    textAnchor="middle"
+                                                    className="text-xs fill-white pointer-events-none"
+                                                >
+                                                    +
+                                                </text>
+                                                
+                                                <circle
+                                                    cx={node.x + 50}
+                                                    cy={node.y + 10}
+                                                    r="8"
+                                                    fill="#3b82f6"
+                                                    className="cursor-pointer"
+                                                    onClick={() => {
+                                                        setEditingNode({ ...node });
+                                                        setShowEditModal(true);
+                                                    }}
+                                                />
+                                                <text
+                                                    x={node.x + 50}
+                                                    y={node.y + 15}
+                                                    textAnchor="middle"
+                                                    className="text-xs fill-white pointer-events-none"
+                                                >
+                                                    ✎
+                                                </text>
+                                                
+                                                <circle
+                                                    cx={node.x + 50}
+                                                    cy={node.y + 30}
+                                                    r="8"
+                                                    fill="#ef4444"
+                                                    className="cursor-pointer"
+                                                    onClick={() => deleteNode(node.id)}
+                                                />
+                                                <text
+                                                    x={node.x + 50}
+                                                    y={node.y + 35}
+                                                    textAnchor="middle"
+                                                    className="text-xs fill-white pointer-events-none"
+                                                >
+                                                    ✕
+                                                </text>
+                                            </g>
+                                        )}
+                                    </g>
+                                ))}
+                            </g>
+                        </svg>
+                    </div>
+                    
+                    {/* トースト */}
+                    {toast && (
+                        <div className={`fixed bottom-4 right-4 px-4 py-2 rounded-lg shadow-lg ${
+                            toast.type === 'success' ? 'bg-green-500' : 
+                            toast.type === 'error' ? 'bg-red-500' : 'bg-blue-500'
+                        } text-white`}>
+                            {toast.message}
+                        </div>
+                    )}
+                    
+                    {/* 新規計画モーダル */}
+                    {showPlanModal && (
+                        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                            <div className="bg-white p-6 rounded-lg shadow-xl w-96">
+                                <h3 className="text-lg font-semibold mb-4">新しい将来計画を作成</h3>
+                                
+                                <div className="space-y-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">実施時期</label>
+                                        <input
+                                            type="month"
+                                            value={newPlanData.period}
+                                            onChange={(e) => setNewPlanData(prev => ({ ...prev, period: e.target.value }))}
+                                            className="w-full border border-gray-300 rounded-md px-3 py-2"
+                                        />
+                                    </div>
+                                    
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">ベースとする組織</label>
+                                        <select
+                                            value={newPlanData.baseOrganization}
+                                            onChange={(e) => setNewPlanData(prev => ({ ...prev, baseOrganization: e.target.value }))}
+                                            className="w-full border border-gray-300 rounded-md px-3 py-2"
+                                        >
+                                            {Object.entries(orgData).map(([key, plan]) => (
+                                                <option key={key} value={key}>
+                                                    {plan.period || plan.name}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">メモ</label>
+                                        <textarea
+                                            value={newPlanData.memo}
+                                            onChange={(e) => setNewPlanData(prev => ({ ...prev, memo: e.target.value }))}
+                                            className="w-full border border-gray-300 rounded-md px-3 py-2 h-20 resize-none"
+                                            placeholder="計画の背景、目的など..."
+                                        />
+                                    </div>
+                                </div>
+                                
+                                <div className="flex justify-end space-x-3 mt-6">
+                                    <button
+                                        onClick={() => setShowPlanModal(false)}
+                                        className="px-4 py-2 text-gray-600 border border-gray-300 rounded-md hover:bg-gray-50"
+                                    >
+                                        キャンセル
+                                    </button>
+                                    <button
+                                        onClick={createNewPlan}
+                                        disabled={!newPlanData.period}
+                                        className="px-4 py-2 bg-purple-500 text-white rounded-md hover:bg-purple-600 disabled:bg-gray-300"
+                                    >
+                                        作成
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                    
+                    {/* 計画管理モーダル */}
+                    {showManageModal && (
+                        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                            <div className="bg-white p-6 rounded-lg shadow-xl w-96">
+                                <h3 className="text-lg font-semibold mb-4">計画管理</h3>
+                                
+                                <div className="space-y-3 max-h-60 overflow-y-auto">
+                                    {Object.entries(orgData).map(([key, plan]) => (
+                                        <div key={key} className="flex items-center justify-between p-3 border rounded-lg">
+                                            <div className="flex-1">
+                                                <div className="font-medium">{plan.period || plan.name}</div>
+                                                {plan.memo && <div className="text-sm text-gray-600">{plan.memo}</div>}
+                                            </div>
+                                            <div className="flex items-center space-x-2">
+                                                {key === currentView && (
+                                                    <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">表示中</span>
+                                                )}
+                                                {key !== 'current' && (
+                                                    <button
+                                                        onClick={() => deletePlan(key)}
+                                                        className="p-1 text-red-600 hover:bg-red-50 rounded"
+                                                    >
+                                                        🗑️
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                                
+                                <div className="flex justify-end mt-6">
+                                    <button
+                                        onClick={() => setShowManageModal(false)}
+                                        className="px-4 py-2 bg-gray-500 text-white rounded-md hover:bg-gray-600"
+                                    >
+                                        閉じる
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                    
+                    {/* ポジション追加モーダル */}
+                    {showAddModal && selectedParent && (
+                        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                            <div className="bg-white p-6 rounded-lg shadow-xl w-96">
+                                <h3 className="text-lg font-semibold mb-4">
+                                    新しいポジションを追加 - {selectedParent.name}の部下
+                                </h3>
+                                
+                                <div className="space-y-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">ポジション状況</label>
+                                        <div className="flex space-x-4">
+                                            <label className="flex items-center">
+                                                <input
+                                                    type="radio"
+                                                    value="existing"
+                                                    checked={newNodeData.type === 'existing'}
+                                                    onChange={(e) => setNewNodeData(prev => ({ ...prev, type: e.target.value }))}
+                                                    className="mr-2"
+                                                />
+                                                既存社員
+                                            </label>
+                                            <label className="flex items-center">
+                                                <input
+                                                    type="radio"
+                                                    value="vacant"
+                                                    checked={newNodeData.type === 'vacant'}
+                                                    onChange={(e) => setNewNodeData(prev => ({ 
+                                                        ...prev, 
+                                                        type: e.target.value,
+                                                        name: e.target.value === 'vacant' ? '募集中' : prev.name
+                                                    }))}
+                                                    className="mr-2"
+                                                />
+                                                空きポジション
+                                            </label>
+                                        </div>
+                                    </div>
+                                    
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">役職名</label>
+                                        <input
+                                            type="text"
+                                            value={newNodeData.position}
+                                            onChange={(e) => setNewNodeData(prev => ({ ...prev, position: e.target.value }))}
+                                            className="w-full border border-gray-300 rounded-md px-3 py-2"
+                                        />
+                                    </div>
+                                    
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">名前</label>
+                                        <input
+                                            type="text"
+                                            value={newNodeData.name}
+                                            onChange={(e) => setNewNodeData(prev => ({ ...prev, name: e.target.value }))}
+                                            className="w-full border border-gray-300 rounded-md px-3 py-2"
+                                            placeholder="人名または「〇〇部 募集中」"
+                                        />
+                                    </div>
+                                    
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">雇用形態</label>
+                                        <select
+                                            value={newNodeData.employment}
+                                            onChange={(e) => setNewNodeData(prev => ({ 
+                                                ...prev, 
+                                                employment: e.target.value,
+                                                grade: e.target.value === '正社員' ? prev.grade : ''
+                                            }))}
+                                            className="w-full border border-gray-300 rounded-md px-3 py-2"
+                                        >
+                                            <option value="正社員">正社員</option>
+                                            <option value="契約社員">契約社員</option>
+                                            <option value="アルバイト/インターン">アルバイト/インターン</option>
+                                            <option value="派遣社員">派遣社員</option>
+                                            <option value="業務委託">業務委託</option>
+                                            <option value="取締役">取締役</option>
+                                            <option value="受出向">受出向</option>
+                                            <option value="出出向">出出向</option>
+                                        </select>
+                                    </div>
+                                    
+                                    {newNodeData.employment === '正社員' && (
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 mb-1">グレード</label>
+                                            <select
+                                                value={newNodeData.grade}
+                                                onChange={(e) => setNewNodeData(prev => ({ ...prev, grade: e.target.value }))}
+                                                className="w-full border border-gray-300 rounded-md px-3 py-2"
+                                            >
+                                                <option value="G8">G8</option>
+                                                <option value="G7">G7</option>
+                                                <option value="G6">G6</option>
+                                                <option value="G5">G5</option>
+                                                <option value="G4">G4</option>
+                                                <option value="G3">G3</option>
+                                                <option value="G2">G2</option>
+                                                <option value="G1">G1</option>
+                                            </select>
+                                        </div>
+                                    )}
+                                </div>
+                                
+                                <div className="flex justify-end space-x-3 mt-6">
+                                    <button
+                                        onClick={() => {
+                                            setShowAddModal(false);
+                                            setSelectedParent(null);
+                                        }}
+                                        className="px-4 py-2 text-gray-600 border border-gray-300 rounded-md hover:bg-gray-50"
+                                    >
+                                        キャンセル
+                                    </button>
+                                    <button
+                                        onClick={saveNewPosition}
+                                        disabled={!newNodeData.name || !newNodeData.position}
+                                        className="px-4 py-2 bg-green-500 text-white rounded-md hover:bg-green-600 disabled:bg-gray-300"
+                                    >
+                                        追加
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                    
+                    {/* ポジション編集モーダル */}
+                    {showEditModal && editingNode && (
+                        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                            <div className="bg-white p-6 rounded-lg shadow-xl w-96">
+                                <h3 className="text-lg font-semibold mb-4">ポジション編集</h3>
+                                
+                                <div className="space-y-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">ポジション状況</label>
+                                        <div className="flex space-x-4">
+                                            <label className="flex items-center">
+                                                <input
+                                                    type="radio"
+                                                    value="existing"
+                                                    checked={editingNode.type === 'existing'}
+                                                    onChange={(e) => setEditingNode(prev => ({ ...prev, type: e.target.value }))}
+                                                    className="mr-2"
+                                                />
+                                                既存社員
+                                            </label>
+                                            <label className="flex items-center">
+                                                <input
+                                                    type="radio"
+                                                    value="vacant"
+                                                    checked={editingNode.type === 'vacant'}
+                                                    onChange={(e) => setEditingNode(prev => ({ 
+                                                        ...prev, 
+                                                        type: e.target.value,
+                                                        name: e.target.value === 'vacant' ? '募集中' : prev.name
+                                                    }))}
+                                                    className="mr-2"
+                                                />
+                                                空きポジション
+                                            </label>
+                                        </div>
+                                    </div>
+                                    
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">役職名</label>
+                                        <input
+                                            type="text"
+                                            value={editingNode.position}
+                                            onChange={(e) => setEditingNode(prev => ({ ...prev, position: e.target.value }))}
+                                            className="w-full border border-gray-300 rounded-md px-3 py-2"
+                                        />
+                                    </div>
+                                    
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">名前</label>
+                                        <input
+                                            type="text"
+                                            value={editingNode.name}
+                                            onChange={(e) => setEditingNode(prev => ({ ...prev, name: e.target.value }))}
+                                            className="w-full border border-gray-300 rounded-md px-3 py-2"
+                                        />
+                                    </div>
+                                    
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">雇用形態</label>
+                                        <select
+                                            value={editingNode.employment || '正社員'}
+                                            onChange={(e) => setEditingNode(prev => ({ 
+                                                ...prev, 
+                                                employment: e.target.value,
+                                                grade: e.target.value === '正社員' ? prev.grade : ''
+                                            }))}
+                                            className="w-full border border-gray-300 rounded-md px-3 py-2"
+                                        >
+                                            <option value="正社員">正社員</option>
+                                            <option value="契約社員">契約社員</option>
+                                            <option value="アルバイト/インターン">アルバイト/インターン</option>
+                                            <option value="派遣社員">派遣社員</option>
+                                            <option value="業務委託">業務委託</option>
+                                            <option value="取締役">取締役</option>
+                                            <option value="受出向">受出向</option>
+                                            <option value="出出向">出出向</option>
+                                        </select>
+                                    </div>
+                                    
+                                    {editingNode.employment === '正社員' && (
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 mb-1">グレード</label>
+                                            <select
+                                                value={editingNode.grade}
+                                                onChange={(e) => setEditingNode(prev => ({ ...prev, grade: e.target.value }))}
+                                                className="w-full border border-gray-300 rounded-md px-3 py-2"
+                                            >
+                                                <option value="G8">G8</option>
+                                                <option value="G7">G7</option>
+                                                <option value="G6">G6</option>
+                                                <option value="G5">G5</option>
+                                                <option value="G4">G4</option>
+                                                <option value="G3">G3</option>
+                                                <option value="G2">G2</option>
+                                                <option value="G1">G1</option>
+                                            </select>
+                                        </div>
+                                    )}
+                                </div>
+                                
+                                <div className="flex justify-end space-x-3 mt-6">
+                                    <button
+                                        onClick={() => {
+                                            setEditingNode(null);
+                                            setShowEditModal(false);
+                                        }}
+                                        className="px-4 py-2 text-gray-600 border border-gray-300 rounded-md hover:bg-gray-50"
+                                    >
+                                        キャンセル
+                                    </button>
+                                    <button
+                                        onClick={saveNodeEdit}
+                                        className="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600"
+                                    >
+                                        保存
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                    
+                    {/* 共有モーダル（簡略版） */}
+                    {showShareModal && (
+                        <ShareModal
+                            currentUser={currentUser}
+                            onClose={() => setShowShareModal(false)}
+                            showToast={showToast}
+                        />
+                    )}
+                </div>
+            );
+        };
+        
+        // 共有モーダルコンポーネント
+        const ShareModal = ({ currentUser, onClose, showToast }) => {
+            const [sharedUsers, setSharedUsers] = useState([]);
+            const [shareEmail, setShareEmail] = useState('');
+            const [sharePermission, setSharePermission] = useState('view');
+            const [loading, setLoading] = useState(true);
+            
+            useEffect(() => {
+                loadSharedUsers();
+            }, []);
+            
+            const loadSharedUsers = async () => {
+                try {
+                    const result = await gasApi.getSharedUsers();
+                    if (result.success) {
+                        setSharedUsers(result.data);
+                    }
+                } catch (err) {
+                    showToast('共有ユーザーの取得に失敗しました', 'error');
+                } finally {
+                    setLoading(false);
+                }
+            };
+            
+            const addSharedUser = async () => {
+                if (!shareEmail) return;
+                
+                try {
+                    const result = await gasApi.addSharedUser(shareEmail, sharePermission);
+                    if (result.success) {
+                        await loadSharedUsers();
+                        setShareEmail('');
+                        showToast('ユーザーを追加しました', 'success');
+                    } else {
+                        showToast(result.error, 'error');
+                    }
+                } catch (err) {
+                    showToast(err.message, 'error');
+                }
+            };
+            
+            const updateUserPermission = async (email, permission) => {
+                try {
+                    const result = await gasApi.updateUserPermission(email, permission);
+                    if (result.success) {
+                        await loadSharedUsers();
+                        showToast('権限を更新しました', 'success');
+                    } else {
+                        showToast(result.error, 'error');
+                    }
+                } catch (err) {
+                    showToast(err.message, 'error');
+                }
+            };
+            
+            const removeSharedUser = async (email) => {
+                if (!confirm('このユーザーのアクセス権限を削除してもよろしいですか？')) return;
+                
+                try {
+                    const result = await gasApi.removeSharedUser(email);
+                    if (result.success) {
+                        await loadSharedUsers();
+                        showToast('ユーザーを削除しました', 'success');
+                    } else {
+                        showToast(result.error, 'error');
+                    }
+                } catch (err) {
+                    showToast(err.message, 'error');
+                }
+            };
+            
+            return (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="bg-white p-6 rounded-lg shadow-xl w-[500px] max-h-[600px] overflow-y-auto">
+                        <div className="flex items-center justify-between mb-4">
+                            <h3 className="text-lg font-semibold">組織デザインラボを共有</h3>
+                            <button
+                                onClick={onClose}
+                                className="px-4 py-2 bg-gray-500 text-white rounded-md hover:bg-gray-600"
+                            >
+                                完了
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+        
+        // アプリケーションをレンダリング
+        ReactDOM.render(<OrgChartApp />, document.getElementById('root'));
+    </script>
+</body>
+</html>="text-gray-400 hover:text-gray-600"
+                            >
+                                ✕
+                            </button>
+                        </div>
+                        
+                        {currentUser?.permission === 'owner' || currentUser?.permission === 'edit' ? (
+                            <>
+                                <div className="mb-6">
+                                    <div className="flex space-x-2 mb-3">
+                                        <input
+                                            type="email"
+                                            value={shareEmail}
+                                            onChange={(e) => setShareEmail(e.target.value)}
+                                            placeholder="メールアドレスを入力"
+                                            className="flex-1 border border-gray-300 rounded-md px-3 py-2 text-sm"
+                                            onKeyPress={(e) => e.key === 'Enter' && addSharedUser()}
+                                        />
+                                        <select
+                                            value={sharePermission}
+                                            onChange={(e) => setSharePermission(e.target.value)}
+                                            className="border border-gray-300 rounded-md px-3 py-2 text-sm"
+                                        >
+                                            <option value="view">閲覧</option>
+                                            <option value="edit">編集</option>
+                                        </select>
+                                        <button
+                                            onClick={addSharedUser}
+                                            disabled={!shareEmail}
+                                            className="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 disabled:bg-gray-300 text-sm"
+                                        >
+                                            共有
+                                        </button>
+                                    </div>
+                                    <div className="text-xs text-gray-500">
+                                        Googleアカウントのメールアドレスを入力してください
+                                    </div>
+                                </div>
+                                
+                                <div>
+                                    <div className="font-medium mb-3">アクセス権限を持つユーザー ({sharedUsers.length})</div>
+                                    
+                                    {loading ? (
+                                        <div className="text-center py-4">
+                                            <div className="loading-spinner mx-auto"></div>
+                                        </div>
+                                    ) : (
+                                        <div className="space-y-2">
+                                            {sharedUsers.map((user, index) => (
+                                                <div key={index} className="flex items-center justify-between p-3 border rounded-lg hover:bg-gray-50">
+                                                    <div>
+                                                        <div className="font-medium text-sm">{user.name}</div>
+                                                        <div className="text-xs text-gray-500">{user.email}</div>
+                                                    </div>
+                                                    
+                                                    <div className="flex items-center space-x-2">
+                                                        {user.permission === 'owner' ? (
+                                                            <span className="text-xs bg-purple-100 text-purple-800 px-2 py-1 rounded">オーナー</span>
+                                                        ) : (
+                                                            <>
+                                                                <select
+                                                                    value={user.permission}
+                                                                    onChange={(e) => updateUserPermission(user.email, e.target.value)}
+                                                                    className="border border-gray-300 rounded px-2 py-1 text-xs"
+                                                                >
+                                                                    <option value="view">閲覧</option>
+                                                                    <option value="edit">編集</option>
+                                                                </select>
+                                                                
+                                                                <button
+                                                                    onClick={() => removeSharedUser(user.email)}
+                                                                    className="text-red-500 hover:text-red-700 p-1"
+                                                                    title="アクセス権限を削除"
+                                                                >
+                                                                    ✕
+                                                                </button>
+                                                            </>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            </>
+                        ) : (
+                            <div className="text-gray-600">
+                                共有設定を変更する権限がありません
+                            </div>
+                        )}
+                        
+                        <div className="flex justify-end mt-6">
+                            <button
+                                onClick={onClose}
+                                classNameffffff' : '#374151'}
+                                        >
+                                            {node.position}
+                                        </text>
+                                        <text
+                                            x={node.x}
+                                            y={node.y + 6}
+                                            textAnchor="middle"
+                                            className="text-sm font-bold pointer-events-none"
+                                            fill={node.grade && node.grade !== 'G1' ? '#
